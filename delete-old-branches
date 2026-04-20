@@ -17,7 +17,7 @@ EXCLUDE_BRANCH_REGEX=${INPUT_EXTRA_PROTECTED_BRANCH_REGEX:-^$}
 EXCLUDE_TAG_REGEX=${INPUT_EXTRA_PROTECTED_TAG_REGEX:-^$}
 EXCLUDE_OPEN_PR_BRANCHES=${INPUT_EXCLUDE_OPEN_PR_BRANCHES:-true}
 
-echo "::set-output name=was_dry_run::${DRY_RUN}"
+echo "was_dry_run=${DRY_RUN}" >> "${GITHUB_OUTPUT}"
 deleted_branches=()
 
 default_branch_protected() {
@@ -68,13 +68,26 @@ is_pr_open_on_branch() {
     fi
 
     local br=${1}
-    open_prs_branches=$(curl -X GET -s -H "Authorization: token ${GITHUB_TOKEN}" \
-        "${BASE_URI}/repos/${REPO}/pulls" | jq '.[].head.ref' | tr -d '"')
+    local page=1
+    while true; do
+        local response
+        response=$(curl -X GET -s -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            "${BASE_URI}/repos/${REPO}/pulls?state=open&per_page=100&page=${page}")
 
-    for pr_br in ${open_prs_branches}; do
-      if [[ "${pr_br}" == "${br}" ]]; then
-          return 0
-      fi
+        local refs
+        refs=$(echo "${response}" | jq -r '.[].head.ref // empty' 2>/dev/null)
+
+        if [[ -z "${refs}" ]]; then
+            break
+        fi
+
+        for pr_br in ${refs}; do
+            if [[ "${pr_br}" == "${br}" ]]; then
+                return 0
+            fi
+        done
+
+        ((page+=1))
     done
 
     return 1
@@ -117,7 +130,7 @@ main() {
             delete_branch_or_tag "${br}" "heads" "${sha}"
         fi
     done
-    echo "::set-output name=deleted_branches::" "${deleted_branches[@]}"
+    echo "deleted_branches=${deleted_branches[*]}" >> "${GITHUB_OUTPUT}"
     if [[ "${DELETE_TAGS}" == true ]]; then
         local tag_counter=1
         for br in $(git ls-remote -q --tags --refs | sed "s@^.*tags/@@" | sort -rn); do
